@@ -1,3 +1,3 @@
 #!/bin/sh
 
-clang src/main.c -o bin/cbuild
+clang src/main.c -o bin/cbuild -g
