@@ -1,7 +1,7 @@
 
 /// Custom error type
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     /// IO Error
     IOError(std::io::Error),
 }
@@ -25,4 +25,4 @@ impl From<std::io::Error> for Error {
 }
 
 /// Custom Result type alias
-type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;

@@ -1,4 +1,7 @@
 
+mod error;
+use error::{Error, Result};
+
 /// Programming languages
 enum Language {
     C,
