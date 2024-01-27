@@ -2,6 +2,9 @@
 /// Custom error type
 #[derive(Debug)]
 pub enum Error {
+    /// Default Error
+    Error(&'static str),
+
     /// IO Error
     IOError(std::io::Error),
 }
@@ -10,8 +13,10 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
+            Error::Error(err) =>
+                writeln!(f, "Error: {}", err),
             Error::IOError(err) =>
-                writeln!(f, "IO Error: {}", err);
+                writeln!(f, "IO Error: {}", err),
         }
     }
 }
@@ -20,7 +25,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
-        Error::IOError(self)
+        Error::IOError(err)
     }
 }
 
