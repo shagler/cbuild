@@ -1,0 +1,10 @@
+[project]
+name = "test_project"
+
+[settings]
+language = "c"
+standard = "c89"
+compiler = "gcc"
+type = "bin"
+target = "x86_64"
+mode = "debug"

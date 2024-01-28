@@ -7,6 +7,12 @@ pub enum Error {
 
     /// IO Error
     IOError(std::io::Error),
+
+    /// No configration file found
+    NoConfig(),
+
+    /// Build failed
+    BuildFailed(),
 }
 
 /// Implement the formatter for our custom error type
@@ -17,6 +23,10 @@ impl std::fmt::Display for Error {
                 writeln!(f, "Error: {}", err),
             Error::IOError(err) =>
                 writeln!(f, "IO Error: {}", err),
+            Error::NoConfig() =>
+                writeln!(f, "No configuration file found"),
+            Error::BuildFailed() =>
+                writeln!(f, "Build failed"),
         }
     }
 }
