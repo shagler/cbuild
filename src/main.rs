@@ -225,13 +225,13 @@ fn parse_arguments() -> Result<Arguments> {
 fn create_new_project(project_name: &str) -> Result<()> {
     // Create the project directory
     // @TODO: What if the directory already exists?
-    let prj_path = format!("tests/{}", project_name);
+    let prj_path = format!("{}", project_name);
     std::fs::create_dir(prj_path)?;
     
     // Create the project directory structure
     // @TODO: If the user asks for librarys, make `/lib`
-    let src_path = format!("tests/{}/src", project_name);
-    let bin_path = format!("tests/{}/bin", project_name);
+    let src_path = format!("{}/src", project_name);
+    let bin_path = format!("{}/bin", project_name);
     std::fs::create_dir(src_path.clone());
     std::fs::create_dir(bin_path);
 
@@ -244,17 +244,19 @@ fn create_new_project(project_name: &str) -> Result<()> {
 
     // Create default configuration file
     // @TODO: Use from Config::default()
-    let config_file_path = format!("tests/{}/config.toml", project_name);
+    let config_file_path = format!("{}/config.toml", project_name);
     let mut config_file = std::fs::File::create(config_file_path)?;
     writeln!(config_file, "[project]\nname = \"{}\"", project_name)?;
+
+    println!("Created project: {}", project_name);
 
     Ok(())
 }
 
 fn build_project(config: Config) -> Result<()> {
     let project_name = config.project_name.as_ref().unwrap();
-    let src_path = format!("tests/{}/src", project_name);
-    let bin_path = format!("tests/{}/bin", project_name);
+    let src_path = format!("{}/src", project_name);
+    let bin_path = format!("{}/bin", project_name);
     let output_file = format!("{}/{}", bin_path, project_name);
     let src_file = format!("{}/main.c", src_path);
 
@@ -306,20 +308,7 @@ fn build_project(config: Config) -> Result<()> {
         return Err(Error::BuildFailed());
     }
     
-    println!("Built `test_project`");
-    Ok(())
-}
-
-fn load_test_project() -> Result<()> {
-    let config_file = std::path::Path::new("tests/config.toml");
-    let config_file = std::fs::read_to_string(config_file)?;
-    let config = parse_config_toml(&config_file)?;
-    println!("Loaded `tests/config.toml`");
-
-    let project = create_new_project("test_project");
-
-    let build = build_project(config)?;
-
+    println!("Built `{}`", config.project_name.unwrap());
     Ok(())
 }
 
@@ -329,11 +318,10 @@ fn main() -> Result<()> {
 
     match args.command.as_str() {
         "build" => {
-            println!("Build project");
-            let prj = load_test_project()?;
+            build_project(args.config)?;
         },
         "new" => {
-            println!("New project: {}", args.config.project_name.unwrap());
+            create_new_project(&args.config.project_name.unwrap())?;
         },
         _ => todo!(),
     }
