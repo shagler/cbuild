@@ -8,11 +8,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GLOBAL_LIB_PATH: &str = "~/.cbuild/libs/";
 
 /// Programming languages
+#[derive(Clone, Debug)]
 enum Language {
     C,
 }
 
 /// Programming language standards
+#[derive(Clone, Debug)]
 enum Standard {
     C89,
     C99,
@@ -21,6 +23,7 @@ enum Standard {
 }
 
 /// Compilers
+#[derive(Clone, Debug)]
 enum Compiler {
     /// GNU Compiler Collection (linux default)
     GCC,
@@ -33,6 +36,7 @@ enum Compiler {
 }
 
 /// Build type
+#[derive(Clone, Debug)]
 enum Type {
     /// Standard binary executable (default)
     Binary,
@@ -45,12 +49,13 @@ enum Type {
 }
 
 /// Build target
-#[derive(PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Target {
     X86_64,
 }
 
 /// Build mode
+#[derive(Clone, Debug)]
 enum Mode {
     /// (default)
     Debug,
@@ -59,6 +64,7 @@ enum Mode {
     Release,
 }
 
+#[derive(Clone, Debug)]
 struct Settings {
     language: Language,
     standard: Standard,
@@ -81,6 +87,7 @@ impl Default for Settings {
     }
 }
 
+#[derive(Clone, Debug)]
 struct Config {
     project_name: Option<String>,
     settings: Settings,
@@ -123,6 +130,7 @@ impl Config {
     }
 }
 
+#[derive(Clone, Debug)]
 struct Arguments {
     command: String,
     config: Config,
