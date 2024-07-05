@@ -21,7 +21,7 @@
 
 1. Clone the repository:
 ```
-git clone https://github.com/shawnha/cbuild.git
+git clone https://github.com/shagler/cbuild.git
 cd cbuild/
 ```
 
