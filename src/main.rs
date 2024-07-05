@@ -11,6 +11,7 @@ const GLOBAL_LIB_PATH: &str = "~/.cbuild/libs/";
 #[derive(Clone, Debug)]
 enum Language {
     C,
+    CPP,
 }
 
 /// Programming language standards
@@ -19,7 +20,12 @@ enum Standard {
     C89,
     C99,
     C11,
-    C17
+    C17,
+    CPP98,
+    CPP11,
+    CPP14,
+    CPP17,
+    CPP20,
 }
 
 /// Compilers
@@ -155,6 +161,7 @@ fn parse_config_toml(config: &str) -> Result<Config> {
                 "language" => {
                     settings.language = match parts[1].trim_matches('"') {
                         "c" => Language::C,
+                        "CPP" => Language::CPP,
                         _ => return Err(Error::Config("Unsupported language".to_string())),
                     }
                 },
@@ -164,6 +171,11 @@ fn parse_config_toml(config: &str) -> Result<Config> {
                         "c99" => Standard::C99,
                         "c11" => Standard::C11,
                         "c17" => Standard::C17,
+                        "CPP98" => Standard::CPP98,
+                        "CPP11" => Standard::CPP11,
+                        "CPP14" => Standard::CPP14,
+                        "CPP17" => Standard::CPP17,
+                        "CPP20" => Standard::CPP20,
                         _ => return Err(Error::Config("Unsupported standard".to_string())),
                     }
                 },
@@ -222,68 +234,102 @@ fn parse_arguments() -> Result<Arguments> {
     }
 
     let command = &args[1];
-    match command.as_str() {
-        "build" => {
-            Ok(Arguments {
-                command: command.clone(),
-                config: Config::load()?,
-            })
-        },
+    let mut config = match command.as_str() {
+        "build" | "run" | "clean" => Config::load()?,
         "new" => {
             if args.len() < 3 {
-                return Err(
-                    Error::Arguments("Project name is required for `new` command".to_string())
-                );
+                return Err(Error::Arguments("Project name is required for `new` command".to_string()));
             }
             let project_name = args[2].clone();
-            Ok(Arguments {
-                command: command.clone(),
-                config: Config::new(&project_name),
-            })
+            Config::new(&project_name)
         },
-        _ => Err(Error::Arguments("Unknown command".to_string())),
-    }
+        _ => return Err(Error::Arguments("Unknown command".to_string())),
+    };
+
+    config.verbose = args.contains(&"--verbose".to_string()) || args.contains(&"-v".to_string());
+
+    Ok(Arguments {
+        command: command.clone(),
+        config,
+    })
 }
 
 fn create_new_project(project_name: &str) -> Result<()> {
-    // Create the project directory
-    // @TODO: What if the directory already exists?
-    let prj_path = format!("{}", project_name);
+    let prj_path = std::path::Path::new(project_name);
+    if prj_path.exists() {
+        return Err(Error::ProjectCreation("Project directory already exists".to_string()));
+    }
     std::fs::create_dir(prj_path)?;
     
-    // Create the project directory structure
-    // @TODO: If the user asks for librarys, make `/lib`
-    let src_path = format!("{}/src", project_name);
-    let bin_path = format!("{}/bin", project_name);
-    std::fs::create_dir(src_path.clone());
-    std::fs::create_dir(bin_path);
-
+    for dir in &["src", "bin", "lib"] {
+        std::fs::create_dir(prj_path.join(dir))?;
+    }
+    
     // Create default source files
-    let main_file_path = format!("{}/main.c", src_path);
+    let main_file_path = prj_path.join("src").join("main.c");
     let mut main_file = std::fs::File::create(main_file_path)?;
-    writeln!(main_file, 
-        "\nint main(int argc, char** argv) {{\n  return 0;\n}}"
-    )?;
+    writeln!(main_file, "#include <stdio.h>\n\nint main(int argc, char** argv) {{\n    printf(\"Hello, World!\\n\");\n    return 0;\n}}")?;
 
-    // Create default configuration file
-    // @TODO: Use from Config::default()
-    let config_file_path = format!("{}/config.toml", project_name);
+    let config_file_path = prj_path.join("config.toml");
     let mut config_file = std::fs::File::create(config_file_path)?;
-    writeln!(config_file, "[project]\nname = \"{}\"", project_name)?;
+    writeln!(config_file, "[project]\nname = \"{}\"\n\n[settings]\nlanguage = \"c\"\nstandard = \"c89\"\ncompiler = \"gcc\"\ntype = \"bin\"\ntarget = \"x86_64\"\nmode = \"debug\"", project_name)?;
+
+    let gitignore_path = prj_path.join(".gitignore");
+    let mut gitignore_file = std::fs::File::create(gitignore_path)?;
+    writeln!(gitignore_file, "/bin\n*.o\n*.a\n*.so\n*.dll")?;
 
     println!("Created project: {}", project_name);
 
     Ok(())
 }
 
+fn manage_dependencies(config: &Config) -> Result<()> {
+    log(config, "Managing dependencies");
+    let project_lib_path = std::path::PathBuf::from(format!("{}/lib", config.project_name.as_ref().unwrap()));
+    std::fs::create_dir_all(&project_lib_path)?;
+
+    let global_lib_path = shellexpand::tilde(GLOBAL_LIB_PATH);
+
+    for lib in &config.libraries {
+        let global_lib_file = std::path::PathBuf::from(global_lib_path.to_string()).join(lib);
+        let project_lib_file = project_lib_path.join(lib);
+
+        if global_lib_file.exists() {
+            if !project_lib_file.exists() {
+                std::fs::copy(&global_lib_file, &project_lib_file)?;
+                println!("Copied dependency: {} to project", lib);
+            } else {
+                println!("Dependency {} already exists in project", lib);
+            }
+        } else {
+            return Err(Error::Library(format!("Library {} not found in global library path", lib)));
+        }
+    }
+
+    Ok(())
+}
+
 fn build_project(config: Config) -> Result<()> {
+    log(&config, "Starting build process");
+    manage_dependencies(&config)?;
+
     let project_name = config.project_name.as_ref().unwrap();
     let src_path = format!("{}/src", project_name);
+    let lib_path = format!("{}/lib", project_name);
     let bin_path = format!("{}/bin", project_name);
     let output_file = format!("{}/{}", bin_path, project_name);
-    let src_file = format!("{}/main.c", src_path);
 
-    let (compiler, mut args) = match config.settings.compiler {
+    let mut source_files = Vec::new();
+    for entry in std::fs::read_dir(src_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() && path.extension().map_or(false, |ext| ext == "c" || ext == "CPP") {
+            source_files.push(path);
+        }
+    }
+
+    let mut args = Vec::new();
+    let compiler = match config.settings.compiler {
         Compiler::GCC | Compiler::CLANG => {
             let compiler = match config.settings.compiler {
                 Compiler::GCC => "gcc",
@@ -291,35 +337,69 @@ fn build_project(config: Config) -> Result<()> {
                 _ => unreachable!(),
             };
             
-            let mut args = vec!["-o", &output_file];
+            args.push(format!("-o{}", output_file));
+            args.push(format!("-I{}", lib_path));
 
             args.push(match config.settings.standard {
-                Standard::C89 => "-std=c89",
-                Standard::C99 => "-std=c99",
-                Standard::C11 => "-std=c11",
-                Standard::C17 => "-std=c17",
+                Standard::C89 => "-std=c89".to_string(),
+                Standard::C99 => "-std=c99".to_string(),
+                Standard::C11 => "-std=c11".to_string(),
+                Standard::C17 => "-std=c17".to_string(),
+                Standard::CPP98 => "-std=c++98".to_string(),
+                Standard::CPP11 => "-std=c++11".to_string(),
+                Standard::CPP14 => "-std=c++14".to_string(),
+                Standard::CPP17 => "-std=c++17".to_string(),
+                Standard::CPP20 => "-std=c++20".to_string(),
             });
 
             match config.settings.mode {
-                Mode::Debug   => args.push("-g"),
-                Mode::Release => args.extend(["-O3", "-s"]),
+                Mode::Debug   => args.push("-g".to_string()),
+                Mode::Release => {
+                    args.push("-O3".to_string());
+                    args.push("-s".to_string());
+                },
             }
 
             if config.settings.target == Target::X86_64 {
-                args.push("-m64");
+                args.push("-m64".to_string());
             }
             
-            args.push(src_file.as_str());
+            args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
 
-            (compiler, args)
+            compiler
         },
         Compiler::MSVC => {
-            unimplemented!("MSVC compiler support not implemented yet");
+            let compiler = "cl.exe";
+            args.push(format!("/Fe:{}", output_file));
+            args.push(format!("/I{}", lib_path));
+
+            args.push(match config.settings.standard {
+                Standard::C89 => "/Za".to_string(),
+                Standard::C99 | Standard::C11 | Standard::C17 => "/std:c11".to_string(),
+                Standard::CPP98 | Standard::CPP11 | Standard::CPP14 => "/std:c++14".to_string(),
+                Standard::CPP17 => "/std:c++17".to_string(),
+                Standard::CPP20 => "/std:c++latest".to_string(),
+            });
+
+            match config.settings.mode {
+                Mode::Debug => args.push("/Zi".to_string()),
+                Mode::Release => {
+                    args.push("/O2".to_string());
+                    args.push("/DNDEBUG".to_string());
+                },
+            }
+
+            if config.settings.target == Target::X86_64 {
+                args.push("/MACHINE:X64".to_string());
+            }
+            
+            args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
+
+            compiler
         },
-        _ => unreachable!(),
     };
 
-    let args: Vec<String> = args.iter().map(|&arg| arg.to_string()).collect();
+    log(&config, &format!("Running command: {} {}", compiler, args.join(" ")));
 
     let output = std::process::Command::new(compiler)
         .args(&args)
@@ -335,18 +415,63 @@ fn build_project(config: Config) -> Result<()> {
     Ok(())
 }
 
+fn run_project(config: Config) -> Result<()> {
+    log(&config, "Running project");
+    let project_name = config.project_name.as_ref().unwrap();
+    let bin_path = format!("{}/bin/{}", project_name, project_name);
+    
+    let output = std::process::Command::new(bin_path)
+        .output()
+        .expect("Failed to execute command");
+
+    std::io::stdout().write_all(&output.stdout)?;
+    std::io::stderr().write_all(&output.stderr)?;
+
+    Ok(())
+}
+
+fn clean_project() -> Result<()> {
+    let bin_path = "bin";
+    if std::path::Path::new(bin_path).exists() {
+        std::fs::remove_dir_all(bin_path)?;
+        println!("Cleaned build artifacts");
+    }
+    Ok(())
+}
+
+fn print_help() {
+    println!("Usage: cbuild <COMMAND>");
+    println!("\nCommands:");
+    println!("  new <NAME>    Create a new project");
+    println!("  build         Build the project");
+    println!("  run           Build and run the project");
+    println!("  clean         Remove build artifacts");
+    println!("  version       Print version info");
+    println!("  help          Print this help message");
+    println!("\nOptions:");
+    println!("  -v, --verbose Enable verbose output");
+}
+
+fn log(config: &Config, message: &str) {
+    if config.verbose {
+        println!("[cbuild] {}", message);
+    }
+}
+
 fn main() -> Result<()> {
-    // @TODO: Print usage on argument fail
-    let args = parse_arguments().unwrap();
+    let args = parse_arguments()?;
 
     match args.command.as_str() {
-        "build" => {
-            build_project(args.config)?;
+        "build" => build_project(args.config)?,
+        "new" => create_new_project(&args.config.project_name.unwrap())?,
+        "run" => {
+            build_project(args.config.clone())?;
+            run_project(args.config)?
         },
-        "new" => {
-            create_new_project(&args.config.project_name.unwrap())?;
-        },
-        _ => todo!(),
+        "clean" => clean_project()?,
+        "version" => println!("cbuild version {}", VERSION),
+        "help" => print_help(),
+        _ => return Err(Error::Arguments("Unknown command".to_string())),
     }
 
     Ok(())
