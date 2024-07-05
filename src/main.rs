@@ -91,13 +91,17 @@ impl Default for Settings {
 struct Config {
     project_name: Option<String>,
     settings: Settings,
+    libraries: Vec<String>,
+    verbose: bool,
 }
 
 impl Config {
     pub fn new(project_name: &str) -> Self {
         Config { 
             project_name: Some(project_name.to_string()), 
-            settings: Settings::default() 
+            settings: Settings::default(),
+            libraries: Vec::new(),
+            verbose: false,
         }
     }
 
@@ -139,6 +143,7 @@ struct Arguments {
 fn parse_config_toml(config: &str) -> Result<Config> {
     let mut project_name = None;
     let mut settings = Settings::default();
+    let mut libraries = Vec::new();
 
     for line in config.lines() {
         let parts: Vec<&str> = line.split('=').map(|part| part.trim()).collect();
@@ -191,6 +196,12 @@ fn parse_config_toml(config: &str) -> Result<Config> {
                         _ => return Err(Error::Config("Unsupported mode".to_string())),
                     }
                 },
+                "libraries" => {
+                    libraries = parts[1].trim_matches('"')
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect();
+                },
                 _ => (),
             }
         }
@@ -199,6 +210,8 @@ fn parse_config_toml(config: &str) -> Result<Config> {
     Ok(Config {
         project_name,
         settings,
+        libraries,
+        verbose: false,
     })
 }
 
