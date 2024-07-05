@@ -101,6 +101,17 @@ struct Config {
     verbose: bool,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            project_name: None,
+            settings: Settings::default(),
+            libraries: Vec::new(),
+            verbose: false,
+        }
+    }
+}
+
 impl Config {
     pub fn new(project_name: &str) -> Self {
         Config { 
@@ -243,6 +254,7 @@ fn parse_arguments() -> Result<Arguments> {
             let project_name = args[2].clone();
             Config::new(&project_name)
         },
+        "help" | "version" => Config::default(),
         _ => return Err(Error::Arguments("Unknown command".to_string())),
     };
 
@@ -268,7 +280,7 @@ fn create_new_project(project_name: &str) -> Result<()> {
     // Create default source files
     let main_file_path = prj_path.join("src").join("main.c");
     let mut main_file = std::fs::File::create(main_file_path)?;
-    writeln!(main_file, "#include <stdio.h>\n\nint main(int argc, char** argv) {{\n    printf(\"Hello, World!\\n\");\n    return 0;\n}}")?;
+    writeln!(main_file, "#include <stdio.h>\n\nint main(int argc, char** argv) {{\n  printf(\"Hello, World!\\n\");\n  return 0;\n}}")?;
 
     let config_file_path = prj_path.join("config.toml");
     let mut config_file = std::fs::File::create(config_file_path)?;
@@ -313,19 +325,26 @@ fn build_project(config: Config) -> Result<()> {
     log(&config, "Starting build process");
     manage_dependencies(&config)?;
 
-    let project_name = config.project_name.as_ref().unwrap();
-    let src_path = format!("{}/src", project_name);
-    let lib_path = format!("{}/lib", project_name);
-    let bin_path = format!("{}/bin", project_name);
-    let output_file = format!("{}/{}", bin_path, project_name);
+    let current_dir = std::env::current_dir()?;
+    let src_path = current_dir.join("src");
+    let lib_path = current_dir.join("lib");
+    let bin_path = current_dir.join("bin");
+    std::fs::create_dir_all(&bin_path)?;
+
+    let project_name = config.project_name.as_ref().ok_or_else(|| Error::Config("Project name not found".to_string()))?;
+    let output_file = bin_path.join(project_name);
 
     let mut source_files = Vec::new();
-    for entry in std::fs::read_dir(src_path)? {
+    for entry in std::fs::read_dir(&src_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() && path.extension().map_or(false, |ext| ext == "c" || ext == "CPP") {
+        if path.is_file() && path.extension().map_or(false, |ext| ext == "c" || ext == "cpp") {
             source_files.push(path);
         }
+    }
+
+    if source_files.is_empty() {
+        return Err(Error::Config("No source files found in src directory".to_string()));
     }
 
     let mut args = Vec::new();
@@ -337,8 +356,8 @@ fn build_project(config: Config) -> Result<()> {
                 _ => unreachable!(),
             };
             
-            args.push(format!("-o{}", output_file));
-            args.push(format!("-I{}", lib_path));
+            args.push(format!("-o{}", output_file.to_str().unwrap()));
+            args.push(format!("-I{}", lib_path.to_str().unwrap()));
 
             args.push(match config.settings.standard {
                 Standard::C89 => "-std=c89".to_string(),
@@ -353,7 +372,7 @@ fn build_project(config: Config) -> Result<()> {
             });
 
             match config.settings.mode {
-                Mode::Debug   => args.push("-g".to_string()),
+                Mode::Debug => args.push("-g".to_string()),
                 Mode::Release => {
                     args.push("-O3".to_string());
                     args.push("-s".to_string());
@@ -363,15 +382,16 @@ fn build_project(config: Config) -> Result<()> {
             if config.settings.target == Target::X86_64 {
                 args.push("-m64".to_string());
             }
-            
+
+            // Add source files to args
             args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
 
             compiler
         },
         Compiler::MSVC => {
             let compiler = "cl.exe";
-            args.push(format!("/Fe:{}", output_file));
-            args.push(format!("/I{}", lib_path));
+            args.push(format!("/Fe:{}", output_file.to_str().unwrap()));
+            args.push(format!("/I{}", lib_path.to_str().unwrap()));
 
             args.push(match config.settings.standard {
                 Standard::C89 => "/Za".to_string(),
@@ -392,7 +412,8 @@ fn build_project(config: Config) -> Result<()> {
             if config.settings.target == Target::X86_64 {
                 args.push("/MACHINE:X64".to_string());
             }
-            
+
+            // Add source files to args
             args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
 
             compiler
@@ -411,21 +432,32 @@ fn build_project(config: Config) -> Result<()> {
         return Err(Error::BuildFailed());
     }
     
-    println!("Built `{}`", config.project_name.unwrap());
+    println!("Built `{}`", project_name);
     Ok(())
 }
 
-fn run_project(config: Config) -> Result<()> {
-    log(&config, "Running project");
-    let project_name = config.project_name.as_ref().unwrap();
-    let bin_path = format!("{}/bin/{}", project_name, project_name);
+fn run_project(config: &Config) -> Result<()> {
+    log(config, "Running project");
+    let project_name = config.project_name.as_ref().ok_or_else(|| Error::Config("Project name not found".to_string()))?;
+    let current_dir = std::env::current_dir()?;
+    let bin_path = current_dir.join("bin").join(project_name);
     
-    let output = std::process::Command::new(bin_path)
+    if !bin_path.exists() {
+        return Err(Error::Config(format!("Binary not found at: {}", bin_path.display())));
+    }
+
+    log(config, &format!("Attempting to run: {}", bin_path.display()));
+
+    let output = std::process::Command::new(&bin_path)
         .output()
-        .expect("Failed to execute command");
+        .map_err(|e| Error::IO(e))?;
 
     std::io::stdout().write_all(&output.stdout)?;
     std::io::stderr().write_all(&output.stderr)?;
+
+    if !output.status.success() {
+        return Err(Error::RunFailed(output.status.code()));
+    }
 
     Ok(())
 }
@@ -461,17 +493,27 @@ fn log(config: &Config, message: &str) {
 fn main() -> Result<()> {
     let args = parse_arguments()?;
 
-    match args.command.as_str() {
-        "build" => build_project(args.config)?,
-        "new" => create_new_project(&args.config.project_name.unwrap())?,
+    let result = match args.command.as_str() {
+        "build" => build_project(args.config),
+        "new" => create_new_project(&args.config.project_name.unwrap()),
         "run" => {
-            build_project(args.config.clone())?;
-            run_project(args.config)?
+            build_project(args.config.clone()).and_then(|_| run_project(&args.config))
         },
-        "clean" => clean_project()?,
-        "version" => println!("cbuild version {}", VERSION),
-        "help" => print_help(),
-        _ => return Err(Error::Arguments("Unknown command".to_string())),
+        "clean" => clean_project(),
+        "version" => {
+            println!("cbuild version {}", VERSION);
+            Ok(())
+        },
+        "help" => {
+            print_help();
+            Ok(())
+        },
+        _ => Err(Error::Arguments("Unknown command".to_string())),
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {:?}", e);
+        std::process::exit(1);
     }
 
     Ok(())

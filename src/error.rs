@@ -24,6 +24,9 @@ pub enum Error {
 
     #[error("Build failed")]
     BuildFailed(),
+
+    #[error("Run failed with exit code: {0:?}")]
+    RunFailed(Option<i32>),
 }
 
 /// Custom Result type alias
