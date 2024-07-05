@@ -1,42 +1,29 @@
 
+use thiserror::Error;
+
 /// Custom error type
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum Error {
-    /// Default Error
-    Error(&'static str),
+    #[error("IO Error: {0}")]
+    IO(#[from] std::io::Error),
 
-    /// IO Error
-    IOError(std::io::Error),
-
-    /// No configration file found
+    #[error("No configuration file found")]
     NoConfig(),
 
-    /// Build failed
+    #[error("Configuration error: {0}")]
+    Config(String),
+
+    #[error("Argument error: {0}")]
+    Arguments(String),
+
+    #[error("Project creation error: {0}")]
+    ProjectCreation(String),
+
+    #[error("Library error: {0}")]
+    Library(String),
+
+    #[error("Build failed")]
     BuildFailed(),
-}
-
-/// Implement the formatter for our custom error type
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Error::Error(err) =>
-                writeln!(f, "Error: {}", err),
-            Error::IOError(err) =>
-                writeln!(f, "IO Error: {}", err),
-            Error::NoConfig() =>
-                writeln!(f, "No configuration file found"),
-            Error::BuildFailed() =>
-                writeln!(f, "Build failed"),
-        }
-    }
-}
-
-/// Implement standard error trait and conversion from other error types
-impl std::error::Error for Error {}
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Error::IOError(err)
-    }
 }
 
 /// Custom Result type alias

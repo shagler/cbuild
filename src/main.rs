@@ -140,7 +140,7 @@ fn parse_config_toml(config: &str) -> Result<Config> {
                 "language" => {
                     settings.language = match parts[1].trim_matches('"') {
                         "c" => Language::C,
-                        _ => return Err(Error::Error("Unsupported language")),
+                        _ => return Err(Error::Config("Unsupported language".to_string())),
                     }
                 },
                 "standard" => {
@@ -149,7 +149,7 @@ fn parse_config_toml(config: &str) -> Result<Config> {
                         "c99" => Standard::C99,
                         "c11" => Standard::C11,
                         "c17" => Standard::C17,
-                        _ => return Err(Error::Error("Unsupported standard")),
+                        _ => return Err(Error::Config("Unsupported standard".to_string())),
                     }
                 },
                 "compiler" => {
@@ -157,7 +157,7 @@ fn parse_config_toml(config: &str) -> Result<Config> {
                         "gcc"   => Compiler::GCC,
                         "clang" => Compiler::CLANG,
                         "msvc"  => Compiler::MSVC,
-                        _ => return Err(Error::Error("Unsupported compiler")),
+                        _ => return Err(Error::Config("Unsupported compiler".to_string())),
                     }
                 },
                 "type" => {
@@ -165,20 +165,20 @@ fn parse_config_toml(config: &str) -> Result<Config> {
                         "bin"   => Type::Binary,
                         "lib"   => Type::Library,
                         "dylib" => Type::DynLibrary,
-                        _ => return Err(Error::Error("Unsupported type")),
+                        _ => return Err(Error::Config("Unsupported type".to_string())),
                     }
                 },
                 "target" => {
                     settings.target = match parts[1].trim_matches('"') {
                         "x86_64" => Target::X86_64,
-                        _ => return Err(Error::Error("Unsupported target")),
+                        _ => return Err(Error::Config("Unsupported target".to_string())),
                     }
                 },
                 "mode" => {
                     settings.mode = match parts[1].trim_matches('"') {
                         "debug"   => Mode::Debug,
                         "release" => Mode::Release,
-                        _ => return Err(Error::Error("Unsupported mode")),
+                        _ => return Err(Error::Config("Unsupported mode".to_string())),
                     }
                 },
                 _ => (),
@@ -195,7 +195,7 @@ fn parse_config_toml(config: &str) -> Result<Config> {
 fn parse_arguments() -> Result<Arguments> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        return Err(Error::Error("Not enough arguments"));
+        return Err(Error::Arguments("Not enough arguments".to_string()));
     }
 
     let command = &args[1];
@@ -209,7 +209,7 @@ fn parse_arguments() -> Result<Arguments> {
         "new" => {
             if args.len() < 3 {
                 return Err(
-                    Error::Error("Project name is required for `new` command")
+                    Error::Arguments("Project name is required for `new` command".to_string())
                 );
             }
             let project_name = args[2].clone();
@@ -218,7 +218,7 @@ fn parse_arguments() -> Result<Arguments> {
                 config: Config::new(&project_name),
             })
         },
-        _ => Err(Error::Error("Unknown command")),
+        _ => Err(Error::Arguments("Unknown command".to_string())),
     }
 }
 
