@@ -4,6 +4,8 @@ use std::io::Write;
 mod error;
 use error::{Error, Result};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GLOBAL_LIB_PATH: &str = "~/.cbuild/libs/";
 
 /// Programming languages
 enum Language {
