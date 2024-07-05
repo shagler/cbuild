@@ -297,7 +297,9 @@ fn create_new_project(project_name: &str) -> Result<()> {
 
 fn manage_dependencies(config: &Config) -> Result<()> {
     log(config, "Managing dependencies");
-    let project_lib_path = std::path::PathBuf::from(format!("{}/lib", config.project_name.as_ref().unwrap()));
+    
+    let current_dir = std::env::current_dir()?;
+    let project_lib_path = current_dir.join("lib");
     std::fs::create_dir_all(&project_lib_path)?;
 
     let global_lib_path = shellexpand::tilde(GLOBAL_LIB_PATH);
