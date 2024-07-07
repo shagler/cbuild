@@ -32,6 +32,11 @@ cargo build --release
 
 3. The binary will be available in `target/release/cbuild`. You can move this to a directory in your PATH for easy access.
 
+Note: You can also install it locally and add it to the path using the command:
+```
+cargo install --path .
+```
+
 ## Usage
 
 ### Creating a new project
