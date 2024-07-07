@@ -3,7 +3,7 @@ name = "test_prj"
 
 [settings]
 language = "c"
-standard = "c89"
+standard = "c99"
 compiler = "gcc"
 type = "bin"
 target = "x86_64"

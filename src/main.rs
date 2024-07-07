@@ -284,7 +284,7 @@ fn create_new_project(project_name: &str) -> Result<()> {
 
     let config_file_path = prj_path.join("config.toml");
     let mut config_file = std::fs::File::create(config_file_path)?;
-    writeln!(config_file, "[project]\nname = \"{}\"\n\n[settings]\nlanguage = \"c\"\nstandard = \"c89\"\ncompiler = \"gcc\"\ntype = \"bin\"\ntarget = \"x86_64\"\nmode = \"debug\"", project_name)?;
+    writeln!(config_file, "[project]\nname = \"{}\"\n\n[settings]\nlanguage = \"c\"\nstandard = \"c99\"\ncompiler = \"gcc\"\ntype = \"bin\"\ntarget = \"x86_64\"\nmode = \"debug\"", project_name)?;
 
     let gitignore_path = prj_path.join(".gitignore");
     let mut gitignore_file = std::fs::File::create(gitignore_path)?;
