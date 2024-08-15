@@ -289,16 +289,16 @@ fn create_source_file(file_path: &PathBuf) -> Result<()> {
         r#"#include <iostream>
 
 int main(int argc, char** argv) {
-    std::cout << "Hello, World!" << std::endl;
-    return 0;
+  std::cout << "Hello, World!" << std::endl;
+  return 0;
 }
 "#
     } else {
         r#"#include <stdio.h>
 
 int main(int argc, char** argv) {
-    printf("Hello, World!\n");
-    return 0;
+  printf("Hello, World!\n");
+  return 0;
 }
 "#
     };
