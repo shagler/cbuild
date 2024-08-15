@@ -1,11 +1,13 @@
 
 use std::io::Write;
+use std::path::PathBuf;
 
 mod error;
 use error::{Error, Result};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GLOBAL_LIB_PATH: &str = "~/.cbuild/libs/";
+const TEMP_BUILD_DIR: &str = "./.cbuild";
 
 /// Programming languages
 #[derive(Clone, Debug)]
@@ -114,8 +116,8 @@ impl Default for Config {
 
 impl Config {
     pub fn new(project_name: &str) -> Self {
-        Config { 
-            project_name: Some(project_name.to_string()), 
+        Config {
+            project_name: Some(project_name.to_string()),
             settings: Settings::default(),
             libraries: Vec::new(),
             verbose: false,
@@ -125,7 +127,7 @@ impl Config {
     pub fn load() -> Result<Self> {
         let working_directory = std::env::current_dir()?;
         let config_file = Self::find_config_file(&working_directory)?;
-        
+
         let contents = std::fs::read_to_string(config_file)?;
         Ok(parse_config_toml(&contents)?)
     }
@@ -155,6 +157,7 @@ impl Config {
 struct Arguments {
     command: String,
     config: Config,
+    file: Option<String>,
 }
 
 fn parse_config_toml(config: &str) -> Result<Config> {
@@ -260,44 +263,94 @@ fn parse_arguments() -> Result<Arguments> {
 
     config.verbose = args.contains(&"--verbose".to_string()) || args.contains(&"-v".to_string());
 
+    let file = if command == "run" && args.len() > 2 && !args[2].starts_with('-') {
+      Some(args[2].clone())
+    }
+    else {
+      None
+    };
+
     Ok(Arguments {
         command: command.clone(),
         config,
+        file,
     })
 }
 
-fn create_new_project(project_name: &str) -> Result<()> {
-    let prj_path = std::path::Path::new(project_name);
-    if prj_path.exists() {
-        return Err(Error::ProjectCreation("Project directory already exists".to_string()));
+fn create_source_file(file_path: &PathBuf) -> Result<()> {
+    if file_path.exists() {
+        return Err(Error::ProjectCreation(format!("File {} already exists", file_path.display())));
     }
-    std::fs::create_dir(prj_path)?;
-    
-    for dir in &["src", "bin", "lib"] {
-        std::fs::create_dir(prj_path.join(dir))?;
-    }
-    
-    // Create default source files
-    let main_file_path = prj_path.join("src").join("main.c");
-    let mut main_file = std::fs::File::create(main_file_path)?;
-    writeln!(main_file, "#include <stdio.h>\n\nint main(int argc, char** argv) {{\n  printf(\"Hello, World!\\n\");\n  return 0;\n}}")?;
 
-    let config_file_path = prj_path.join("config.toml");
-    let mut config_file = std::fs::File::create(config_file_path)?;
-    writeln!(config_file, "[project]\nname = \"{}\"\n\n[settings]\nlanguage = \"c\"\nstandard = \"c99\"\ncompiler = \"gcc\"\ntype = \"bin\"\ntarget = \"x86_64\"\nmode = \"debug\"", project_name)?;
+    let file_ext = file_path.extension().and_then(|os_str| os_str.to_str()).unwrap_or("c");
+    let is_cpp = file_ext == "cpp";
 
-    let gitignore_path = prj_path.join(".gitignore");
-    let mut gitignore_file = std::fs::File::create(gitignore_path)?;
-    writeln!(gitignore_file, "/bin\n*.o\n*.a\n*.so\n*.dll")?;
+    let content = if is_cpp {
+        r#"#include <iostream>
 
-    println!("Created project: {}", project_name);
+int main(int argc, char** argv) {
+    std::cout << "Hello, World!" << std::endl;
+    return 0;
+}
+"#
+    } else {
+        r#"#include <stdio.h>
+
+int main(int argc, char** argv) {
+    printf("Hello, World!\n");
+    return 0;
+}
+"#
+    };
+
+    std::fs::write(file_path, content)?;
+    println!("Created file: {}", file_path.display());
 
     Ok(())
 }
 
+fn create_new_project(name: &str) -> Result<()> {
+    let path = std::path::Path::new(name);
+    if name.ends_with(".c") || name.ends_with(".cpp") {
+      return create_new_module(name);
+    }
+    if path.exists() {
+        return Err(Error::ProjectCreation("Project directory already exists".to_string()));
+    }
+    std::fs::create_dir(path)?;
+
+    for dir in &["src", "bin", "lib"] {
+        std::fs::create_dir(path.join(dir))?;
+    }
+
+    // @TODO: file type based on project (c/c++)
+    let main_file_path = path.join("src").join("main.c");
+    create_source_file(&main_file_path)?;
+
+    let config_file_path = path.join("config.toml");
+    let mut config_file = std::fs::File::create(config_file_path)?;
+    writeln!(config_file, "[project]\nname = \"{}\"\n\n[settings]\nlanguage = \"c\"\nstandard = \"c99\"\ncompiler = \"gcc\"\ntype = \"bin\"\ntarget = \"x86_64\"\nmode = \"debug\"", name)?;
+
+    let gitignore_path = path.join(".gitignore");
+    let mut gitignore_file = std::fs::File::create(gitignore_path)?;
+    writeln!(gitignore_file, "/bin\n*.o\n*.a\n*.so\n*.dll")?;
+
+    println!("Created project: {}", name);
+
+    Ok(())
+}
+
+fn create_new_module(module_name: &str) -> Result<()> {
+    let module_path = PathBuf::from(module_name);
+    if module_path.exists() {
+      return Err(Error::ProjectCreation(format!("File '{}' already exists", module_name)));
+    }
+    create_source_file(&module_path)
+}
+
 fn manage_dependencies(config: &Config) -> Result<()> {
     log(config, "Managing dependencies");
-    
+
     let current_dir = std::env::current_dir()?;
     let project_lib_path = current_dir.join("lib");
     std::fs::create_dir_all(&project_lib_path)?;
@@ -357,7 +410,7 @@ fn build_project(config: Config) -> Result<()> {
                 Compiler::CLANG => "clang",
                 _ => unreachable!(),
             };
-            
+
             args.push(format!("-o{}", output_file.to_str().unwrap()));
             args.push(format!("-I{}", lib_path.to_str().unwrap()));
 
@@ -385,7 +438,6 @@ fn build_project(config: Config) -> Result<()> {
                 args.push("-m64".to_string());
             }
 
-            // Add source files to args
             args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
 
             compiler
@@ -415,7 +467,6 @@ fn build_project(config: Config) -> Result<()> {
                 args.push("/MACHINE:X64".to_string());
             }
 
-            // Add source files to args
             args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
 
             compiler
@@ -433,7 +484,8 @@ fn build_project(config: Config) -> Result<()> {
         std::io::stderr().write_all(&output.stderr)?;
         return Err(Error::BuildFailed());
     }
-    
+
+    // @TODO: don't print on `run` mode
     println!("Built `{}`", project_name);
     Ok(())
 }
@@ -443,7 +495,7 @@ fn run_project(config: &Config) -> Result<()> {
     let project_name = config.project_name.as_ref().ok_or_else(|| Error::Config("Project name not found".to_string()))?;
     let current_dir = std::env::current_dir()?;
     let bin_path = current_dir.join("bin").join(project_name);
-    
+
     if !bin_path.exists() {
         return Err(Error::Config(format!("Binary not found at: {}", bin_path.display())));
     }
@@ -464,6 +516,66 @@ fn run_project(config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn build_and_run_file(config: &Config, file_name: &str) -> Result<()> {
+    log(config, &format!("Building and running file: {}", file_name));
+
+    let temp_dir = PathBuf::from(TEMP_BUILD_DIR);
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let source_file = PathBuf::from(file_name);
+    let file_stem = source_file.file_stem().unwrap().to_str().unwrap();
+    let output_file = temp_dir.join(file_stem);
+
+    let mut args = Vec::new();
+    let compiler = match config.settings.compiler {
+        Compiler::GCC => "gcc",
+        Compiler::CLANG => "clang",
+        Compiler::MSVC => "cl.exe",
+    };
+
+    match config.settings.compiler {
+        Compiler::GCC | Compiler::CLANG => {
+            args.push(format!("-o{}", output_file.to_str().unwrap()));
+        },
+        Compiler::MSVC => {
+            args.push(format!("/Fe:{}", output_file.to_str().unwrap()));
+        },
+    }
+
+    args.push(source_file.to_str().unwrap().to_string());
+
+    log(config, &format!("Running command: {} {}", compiler, args.join(" ")));
+
+    let output = std::process::Command::new(compiler)
+        .args(&args)
+        .output()
+        .expect("Failed to execute build command");
+
+    if !output.status.success() {
+        std::io::stderr().write_all(&output.stderr)?;
+        return Err(Error::BuildFailed());
+    }
+
+    println!("Built file: {}", file_name);
+
+    log(config, &format!("Running: {}", output_file.display()));
+
+    let run_output = std::process::Command::new(&output_file)
+        .output()
+        .map_err(|e| Error::IO(e))?;
+
+    std::io::stdout().write_all(&run_output.stdout)?;
+    std::io::stderr().write_all(&run_output.stderr)?;
+
+    if !run_output.status.success() {
+        return Err(Error::RunFailed(run_output.status.code()));
+    }
+
+    std::fs::remove_file(output_file)?;
+
+    Ok(())
+}
+
 fn clean_project() -> Result<()> {
     let bin_path = "bin";
     if std::path::Path::new(bin_path).exists() {
@@ -478,7 +590,7 @@ fn print_help() {
     println!("\nCommands:");
     println!("  new <NAME>    Create a new project");
     println!("  build         Build the project");
-    println!("  run           Build and run the project");
+    println!("  run [FILE]    Build and run the project or a specific file");
     println!("  clean         Remove build artifacts");
     println!("  version       Print version info");
     println!("  help          Print this help message");
@@ -497,9 +609,21 @@ fn main() -> Result<()> {
 
     let result = match args.command.as_str() {
         "build" => build_project(args.config),
-        "new" => create_new_project(&args.config.project_name.unwrap()),
+        "new" => {
+            if let Some(file) = args.file {
+                create_new_module(&file)
+            }
+            else {
+                create_new_project(&args.config.project_name.unwrap())
+            }
+        },
         "run" => {
-            build_project(args.config.clone()).and_then(|_| run_project(&args.config))
+            if let Some(file) = args.file {
+                build_and_run_file(&args.config, &file)
+            }
+            else {
+                build_project(args.config.clone()).and_then(|_| run_project(&args.config))
+            }
         },
         "clean" => clean_project(),
         "version" => {
