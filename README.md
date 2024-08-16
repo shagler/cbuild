@@ -90,6 +90,20 @@ To build and run your project in one step, use:
 cbuild run
 ```
 
+### Build and run single source file
+
+Optionally, your can create a source file like:
+```
+cbuild new test.cc
+```
+
+This creates an empty "Hello World" source file, ready for compilation.
+
+You can then compile and run any single source file (that has an entry point):
+```
+cbuild run test.c
+```
+
 ### Cleaning build artifacts
 
 To remove build artifacts, use:
