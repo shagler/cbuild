@@ -101,7 +101,7 @@ This creates an empty "Hello World" source file, ready for compilation.
 
 You can then compile and run any single source file (that has an entry point):
 ```
-cbuild run test.c
+cbuild run test.cc
 ```
 
 ### Cleaning build artifacts
