@@ -7,6 +7,9 @@ pub enum Error {
     #[error("IO Error: {0}")]
     IO(#[from] std::io::Error),
 
+    #[error("TOML parse error: {0}")]
+    Toml(#[from] toml::de::Error),
+
     #[error("No configuration file found")]
     NoConfig(),
 

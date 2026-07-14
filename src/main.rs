@@ -1,6 +1,8 @@
-
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
+
+use serde::{Deserialize, Deserializer};
 
 mod error;
 use error::{Error, Result};
@@ -10,14 +12,16 @@ const GLOBAL_LIB_PATH: &str = "~/.cbuild/libs/";
 const TEMP_BUILD_DIR: &str = "./.cbuild";
 
 /// Programming languages
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
 enum Language {
     C,
     CPP,
 }
 
 /// Programming language standards
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
 enum Standard {
     C89,
     C99,
@@ -28,10 +32,12 @@ enum Standard {
     CPP14,
     CPP17,
     CPP20,
+    CPP23,
 }
 
 /// Compilers
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
 enum Compiler {
     /// GNU Compiler Collection (linux default)
     GCC,
@@ -44,12 +50,13 @@ enum Compiler {
 }
 
 /// Build type
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
 enum Type {
     /// Standard binary executable (default)
     Binary,
 
-    /// `.lib` library file
+    /// `.lib` static library file
     Library,
 
     /// `.dll` dynamic library file
@@ -57,13 +64,15 @@ enum Type {
 }
 
 /// Build target
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(try_from = "String")]
 enum Target {
     X86_64,
 }
 
 /// Build mode
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
 enum Mode {
     /// (default)
     Debug,
@@ -72,14 +81,111 @@ enum Mode {
     Release,
 }
 
-#[derive(Clone, Debug)]
+fn norm(s: &str) -> String {
+    s.trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_', ' '], "")
+        .replace("cxx", "cpp")
+}
+
+impl TryFrom<String> for Language {
+    type Error = String;
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        match norm(&s).as_str() {
+            "c" => Ok(Language::C),
+            "cpp" | "c++" | "cc" => Ok(Language::CPP),
+            other => Err(format!("unsupported language: `{other}`")),
+        }
+    }
+}
+
+impl TryFrom<String> for Standard {
+    type Error = String;
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        match norm(&s).as_str() {
+            "c89" | "c90" => Ok(Standard::C89),
+            "c99" => Ok(Standard::C99),
+            "c11" => Ok(Standard::C11),
+            "c17" | "c18" => Ok(Standard::C17),
+            "c++98" | "cpp98" | "c++03" | "cpp03" => Ok(Standard::CPP98),
+            "c++11" | "cpp11" | "c++0x" => Ok(Standard::CPP11),
+            "c++14" | "cpp14" | "c++1y" => Ok(Standard::CPP14),
+            "c++17" | "cpp17" | "c++1z" => Ok(Standard::CPP17),
+            "c++20" | "cpp20" | "c++2a" => Ok(Standard::CPP20),
+            "c++23" | "cpp23" | "c++2b" => Ok(Standard::CPP23),
+            other => Err(format!("unsupported standard: `{other}`")),
+        }
+    }
+}
+
+impl TryFrom<String> for Compiler {
+    type Error = String;
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        match norm(&s).as_str() {
+            "gcc" | "g++" => Ok(Compiler::GCC),
+            "clang" | "clang++" => Ok(Compiler::CLANG),
+            "msvc" | "cl" => Ok(Compiler::MSVC),
+            other => Err(format!("unsupported compiler: `{other}`")),
+        }
+    }
+}
+
+impl TryFrom<String> for Type {
+    type Error = String;
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        match norm(&s).as_str() {
+            "bin" | "exe" | "executable" => Ok(Type::Binary),
+            "lib" | "static" | "staticlib" => Ok(Type::Library),
+            "dylib" | "dll" | "shared" | "so" => Ok(Type::DynLibrary),
+            other => Err(format!("unsupported type: `{other}`")),
+        }
+    }
+}
+
+impl TryFrom<String> for Target {
+    type Error = String;
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        match norm(&s).as_str() {
+            // Normalization strips `_` so `x86_64` = `x8664`
+            "x8664" | "x64" | "amd64" => Ok(Target::X86_64),
+            other => Err(format!("unsupported target: `{other}`")),
+        }
+    }
+}
+
+impl TryFrom<String> for Mode {
+    type Error = String;
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        match norm(&s).as_str() {
+            "debug" | "dev" => Ok(Mode::Debug),
+            "release" | "rel" => Ok(Mode::Release),
+            other => Err(format!("unsupported mode: `{other}`")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
 struct Settings {
     language: Language,
     standard: Standard,
     compiler: Compiler,
+    #[serde(rename = "type")]
     build_type: Type,
     target: Target,
     mode: Mode,
+
+    include_dirs: Vec<String>,
+    defines: Vec<String>,
+    #[serde(deserialize_with = "string_or_vec")]
+    cflags: Vec<String>,
+    #[serde(deserialize_with = "string_or_vec")]
+    lflags: Vec<String>,
+    system_libs: Vec<String>,
+    #[serde(deserialize_with = "string_or_vec")]
+    libraries: Vec<String>,
+    allow_post_build_run: bool,
 }
 
 impl Default for Settings {
@@ -91,64 +197,103 @@ impl Default for Settings {
             build_type: Type::Binary,
             target: Target::X86_64,
             mode: Mode::Debug,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Config {
-    project_name: Option<String>,
-    settings: Settings,
-    libraries: Vec<String>,
-    verbose: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            project_name: None,
-            settings: Settings::default(),
+            include_dirs: Vec::new(),
+            defines: Vec::new(),
+            cflags: Vec::new(),
+            lflags: Vec::new(),
+            system_libs: Vec::new(),
             libraries: Vec::new(),
-            verbose: false,
+            allow_post_build_run: false,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct Project {
+    name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+struct Dependency {
+    path: Option<String>,
+    copy: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+#[allow(dead_code)]
+enum PostBuild {
+    Copy { from: String, to: String },
+    Mkdir { path: String },
+    Remove { path: String },
+    Run { command: Vec<String> },
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+struct Workspace {
+    members: Vec<String>,
+}
+
+fn string_or_vec<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Str(String),
+        Vec(Vec<String>),
+    }
+    Ok(match StringOrVec::deserialize(d)? {
+        StringOrVec::Vec(v) => v,
+        StringOrVec::Str(s) => s
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+    })
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+struct Config {
+    project: Project,
+    settings: Settings,
+    dependencies: BTreeMap<String, Dependency>,
+    post_build: Vec<PostBuild>,
+    workspace: Option<Workspace>,
+    #[serde(skip)]
+    verbose: bool,
 }
 
 impl Config {
     pub fn new(project_name: &str) -> Self {
-        Config {
-            project_name: Some(project_name.to_string()),
-            settings: Settings::default(),
-            libraries: Vec::new(),
-            verbose: false,
-        }
+        let mut config = Config::default();
+        config.project.name = Some(project_name.to_string());
+        config
     }
 
     pub fn load() -> Result<Self> {
         let working_directory = std::env::current_dir()?;
         let config_file = Self::find_config_file(&working_directory)?;
-
         let contents = std::fs::read_to_string(config_file)?;
-        Ok(parse_config_toml(&contents)?)
+        let config: Config = toml::from_str(&contents)?;
+        Ok(config)
     }
 
-    fn find_config_file(path: &std::path::Path) -> Result<std::path::PathBuf> {
-        let mut directories = vec![path.to_path_buf()];
-        while let Some(dir) = directories.pop() {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        directories.push(path);
-                    }
-                    else if path.file_name().map_or(
-                            false, |name| name == "config.toml") {
-                        return Ok(path);
-                    }
-                }
+    /// Walk upwards till we find the first `config.toml`
+    fn find_config_file(start: &std::path::Path) -> Result<std::path::PathBuf> {
+        let mut dir = Some(start);
+        while let Some(d) = dir {
+            let candidate = d.join("config.toml");
+            if candidate.is_file() {
+                return Ok(candidate);
             }
+            dir = d.parent();
         }
-
         Err(Error::NoConfig())
     }
 }
@@ -158,87 +303,6 @@ struct Arguments {
     command: String,
     config: Config,
     file: Option<String>,
-}
-
-fn parse_config_toml(config: &str) -> Result<Config> {
-    let mut project_name = None;
-    let mut settings = Settings::default();
-    let mut libraries = Vec::new();
-
-    for line in config.lines() {
-        let parts: Vec<&str> = line.split('=').map(|part| part.trim()).collect();
-        if parts.len() == 2 {
-            match parts[0] {
-                "name" => {
-                    project_name = Some(parts[1].trim_matches('"').to_string());
-                },
-                "language" => {
-                    settings.language = match parts[1].trim_matches('"') {
-                        "c" => Language::C,
-                        "CPP" => Language::CPP,
-                        _ => return Err(Error::Config("Unsupported language".to_string())),
-                    }
-                },
-                "standard" => {
-                    settings.standard = match parts[1].trim_matches('"') {
-                        "c89" => Standard::C89,
-                        "c99" => Standard::C99,
-                        "c11" => Standard::C11,
-                        "c17" => Standard::C17,
-                        "CPP98" => Standard::CPP98,
-                        "CPP11" => Standard::CPP11,
-                        "CPP14" => Standard::CPP14,
-                        "CPP17" => Standard::CPP17,
-                        "CPP20" => Standard::CPP20,
-                        _ => return Err(Error::Config("Unsupported standard".to_string())),
-                    }
-                },
-                "compiler" => {
-                    settings.compiler = match parts[1].trim_matches('"') {
-                        "gcc"   => Compiler::GCC,
-                        "clang" => Compiler::CLANG,
-                        "msvc"  => Compiler::MSVC,
-                        _ => return Err(Error::Config("Unsupported compiler".to_string())),
-                    }
-                },
-                "type" => {
-                    settings.build_type = match parts[1].trim_matches('"') {
-                        "bin"   => Type::Binary,
-                        "lib"   => Type::Library,
-                        "dylib" => Type::DynLibrary,
-                        _ => return Err(Error::Config("Unsupported type".to_string())),
-                    }
-                },
-                "target" => {
-                    settings.target = match parts[1].trim_matches('"') {
-                        "x86_64" => Target::X86_64,
-                        _ => return Err(Error::Config("Unsupported target".to_string())),
-                    }
-                },
-                "mode" => {
-                    settings.mode = match parts[1].trim_matches('"') {
-                        "debug"   => Mode::Debug,
-                        "release" => Mode::Release,
-                        _ => return Err(Error::Config("Unsupported mode".to_string())),
-                    }
-                },
-                "libraries" => {
-                    libraries = parts[1].trim_matches('"')
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .collect();
-                },
-                _ => (),
-            }
-        }
-    }
-
-    Ok(Config {
-        project_name,
-        settings,
-        libraries,
-        verbose: false,
-    })
 }
 
 fn parse_arguments() -> Result<Arguments> {
@@ -252,11 +316,13 @@ fn parse_arguments() -> Result<Arguments> {
         "build" | "run" | "clean" => Config::load()?,
         "new" => {
             if args.len() < 3 {
-                return Err(Error::Arguments("Project name is required for `new` command".to_string()));
+                return Err(Error::Arguments(
+                    "Project name is required for `new` command".to_string(),
+                ));
             }
             let project_name = args[2].clone();
             Config::new(&project_name)
-        },
+        }
         "help" | "version" => Config::default(),
         _ => return Err(Error::Arguments("Unknown command".to_string())),
     };
@@ -264,10 +330,9 @@ fn parse_arguments() -> Result<Arguments> {
     config.verbose = args.contains(&"--verbose".to_string()) || args.contains(&"-v".to_string());
 
     let file = if command == "run" && args.len() > 2 && !args[2].starts_with('-') {
-      Some(args[2].clone())
-    }
-    else {
-      None
+        Some(args[2].clone())
+    } else {
+        None
     };
 
     Ok(Arguments {
@@ -279,10 +344,16 @@ fn parse_arguments() -> Result<Arguments> {
 
 fn create_source_file(file_path: &PathBuf) -> Result<()> {
     if file_path.exists() {
-        return Err(Error::ProjectCreation(format!("File {} already exists", file_path.display())));
+        return Err(Error::ProjectCreation(format!(
+            "File {} already exists",
+            file_path.display()
+        )));
     }
 
-    let file_ext = file_path.extension().and_then(|os_str| os_str.to_str()).unwrap_or("c");
+    let file_ext = file_path
+        .extension()
+        .and_then(|os_str| os_str.to_str())
+        .unwrap_or("c");
     let is_cpp = file_ext == "cpp";
 
     let content = if is_cpp {
@@ -312,10 +383,12 @@ int main(int argc, char** argv) {
 fn create_new_project(name: &str) -> Result<()> {
     let path = std::path::Path::new(name);
     if name.ends_with(".c") || name.ends_with(".cpp") {
-      return create_new_module(name);
+        return create_new_module(name);
     }
     if path.exists() {
-        return Err(Error::ProjectCreation("Project directory already exists".to_string()));
+        return Err(Error::ProjectCreation(
+            "Project directory already exists".to_string(),
+        ));
     }
     std::fs::create_dir(path)?;
 
@@ -343,7 +416,10 @@ fn create_new_project(name: &str) -> Result<()> {
 fn create_new_module(module_name: &str) -> Result<()> {
     let module_path = PathBuf::from(module_name);
     if module_path.exists() {
-      return Err(Error::ProjectCreation(format!("File '{}' already exists", module_name)));
+        return Err(Error::ProjectCreation(format!(
+            "File '{}' already exists",
+            module_name
+        )));
     }
     create_source_file(&module_path)
 }
@@ -357,7 +433,7 @@ fn manage_dependencies(config: &Config) -> Result<()> {
 
     let global_lib_path = shellexpand::tilde(GLOBAL_LIB_PATH);
 
-    for lib in &config.libraries {
+    for lib in &config.settings.libraries {
         let global_lib_file = std::path::PathBuf::from(global_lib_path.to_string()).join(lib);
         let project_lib_file = project_lib_path.join(lib);
 
@@ -369,7 +445,10 @@ fn manage_dependencies(config: &Config) -> Result<()> {
                 println!("Dependency {} already exists in project", lib);
             }
         } else {
-            return Err(Error::Library(format!("Library {} not found in global library path", lib)));
+            return Err(Error::Library(format!(
+                "Library {} not found in global library path",
+                lib
+            )));
         }
     }
 
@@ -386,20 +465,30 @@ fn build_project(config: Config) -> Result<()> {
     let bin_path = current_dir.join("bin");
     std::fs::create_dir_all(&bin_path)?;
 
-    let project_name = config.project_name.as_ref().ok_or_else(|| Error::Config("Project name not found".to_string()))?;
+    let project_name = config
+        .project
+        .name
+        .as_ref()
+        .ok_or_else(|| Error::Config("Project name not found".to_string()))?;
     let output_file = bin_path.join(project_name);
 
     let mut source_files = Vec::new();
     for entry in std::fs::read_dir(&src_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() && path.extension().map_or(false, |ext| ext == "c" || ext == "cpp") {
+        if path.is_file()
+            && path
+                .extension()
+                .map_or(false, |ext| ext == "c" || ext == "cpp")
+        {
             source_files.push(path);
         }
     }
 
     if source_files.is_empty() {
-        return Err(Error::Config("No source files found in src directory".to_string()));
+        return Err(Error::Config(
+            "No source files found in src directory".to_string(),
+        ));
     }
 
     let mut args = Vec::new();
@@ -424,6 +513,7 @@ fn build_project(config: Config) -> Result<()> {
                 Standard::CPP14 => "-std=c++14".to_string(),
                 Standard::CPP17 => "-std=c++17".to_string(),
                 Standard::CPP20 => "-std=c++20".to_string(),
+                Standard::CPP23 => "-std=c++23".to_string(),
             });
 
             match config.settings.mode {
@@ -431,17 +521,21 @@ fn build_project(config: Config) -> Result<()> {
                 Mode::Release => {
                     args.push("-O3".to_string());
                     args.push("-s".to_string());
-                },
+                }
             }
 
             if config.settings.target == Target::X86_64 {
                 args.push("-m64".to_string());
             }
 
-            args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
+            args.extend(
+                source_files
+                    .iter()
+                    .map(|path| path.to_str().unwrap().to_string()),
+            );
 
             compiler
-        },
+        }
         Compiler::MSVC => {
             let compiler = "cl.exe";
             args.push(format!("/Fe:{}", output_file.to_str().unwrap()));
@@ -453,6 +547,7 @@ fn build_project(config: Config) -> Result<()> {
                 Standard::CPP98 | Standard::CPP11 | Standard::CPP14 => "/std:c++14".to_string(),
                 Standard::CPP17 => "/std:c++17".to_string(),
                 Standard::CPP20 => "/std:c++latest".to_string(),
+                Standard::CPP23 => "/std:c++latest".to_string(),
             });
 
             match config.settings.mode {
@@ -460,20 +555,27 @@ fn build_project(config: Config) -> Result<()> {
                 Mode::Release => {
                     args.push("/O2".to_string());
                     args.push("/DNDEBUG".to_string());
-                },
+                }
             }
 
             if config.settings.target == Target::X86_64 {
                 args.push("/MACHINE:X64".to_string());
             }
 
-            args.extend(source_files.iter().map(|path| path.to_str().unwrap().to_string()));
+            args.extend(
+                source_files
+                    .iter()
+                    .map(|path| path.to_str().unwrap().to_string()),
+            );
 
             compiler
-        },
+        }
     };
 
-    log(&config, &format!("Running command: {} {}", compiler, args.join(" ")));
+    log(
+        &config,
+        &format!("Running command: {} {}", compiler, args.join(" ")),
+    );
 
     let output = std::process::Command::new(compiler)
         .args(&args)
@@ -492,15 +594,25 @@ fn build_project(config: Config) -> Result<()> {
 
 fn run_project(config: &Config) -> Result<()> {
     log(config, "Running project");
-    let project_name = config.project_name.as_ref().ok_or_else(|| Error::Config("Project name not found".to_string()))?;
+    let project_name = config
+        .project
+        .name
+        .as_ref()
+        .ok_or_else(|| Error::Config("Project name not found".to_string()))?;
     let current_dir = std::env::current_dir()?;
     let bin_path = current_dir.join("bin").join(project_name);
 
     if !bin_path.exists() {
-        return Err(Error::Config(format!("Binary not found at: {}", bin_path.display())));
+        return Err(Error::Config(format!(
+            "Binary not found at: {}",
+            bin_path.display()
+        )));
     }
 
-    log(config, &format!("Attempting to run: {}", bin_path.display()));
+    log(
+        config,
+        &format!("Attempting to run: {}", bin_path.display()),
+    );
 
     let output = std::process::Command::new(&bin_path)
         .output()
@@ -536,15 +648,18 @@ fn build_and_run_file(config: &Config, file_name: &str) -> Result<()> {
     match config.settings.compiler {
         Compiler::GCC | Compiler::CLANG => {
             args.push(format!("-o{}", output_file.to_str().unwrap()));
-        },
+        }
         Compiler::MSVC => {
             args.push(format!("/Fe:{}", output_file.to_str().unwrap()));
-        },
+        }
     }
 
     args.push(source_file.to_str().unwrap().to_string());
 
-    log(config, &format!("Running command: {} {}", compiler, args.join(" ")));
+    log(
+        config,
+        &format!("Running command: {} {}", compiler, args.join(" ")),
+    );
 
     let output = std::process::Command::new(compiler)
         .args(&args)
@@ -612,28 +727,26 @@ fn main() -> Result<()> {
         "new" => {
             if let Some(file) = args.file {
                 create_new_module(&file)
+            } else {
+                create_new_project(&args.config.project.name.unwrap())
             }
-            else {
-                create_new_project(&args.config.project_name.unwrap())
-            }
-        },
+        }
         "run" => {
             if let Some(file) = args.file {
                 build_and_run_file(&args.config, &file)
-            }
-            else {
+            } else {
                 build_project(args.config.clone()).and_then(|_| run_project(&args.config))
             }
-        },
+        }
         "clean" => clean_project(),
         "version" => {
             println!("cbuild version {}", VERSION);
             Ok(())
-        },
+        }
         "help" => {
             print_help();
             Ok(())
-        },
+        }
         _ => Err(Error::Arguments("Unknown command".to_string())),
     };
 
@@ -643,4 +756,156 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_tokens_normalize() {
+        assert!(matches!(
+            Language::try_from("c".to_string()),
+            Ok(Language::C)
+        ));
+        assert!(matches!(
+            Language::try_from("cpp".to_string()),
+            Ok(Language::CPP)
+        ));
+        assert!(matches!(
+            Language::try_from("C++".to_string()),
+            Ok(Language::CPP)
+        ));
+        assert!(matches!(
+            Language::try_from("CXX".to_string()),
+            Ok(Language::CPP)
+        ));
+        assert!(Language::try_from("rust".to_string()).is_err());
+    }
+
+    #[test]
+    fn standard_tokens_normalize_incl_cpp23_and_legacy() {
+        assert!(matches!(
+            Standard::try_from("c99".to_string()),
+            Ok(Standard::C99)
+        ));
+        assert!(matches!(
+            Standard::try_from("c++23".to_string()),
+            Ok(Standard::CPP23)
+        ));
+        assert!(matches!(
+            Standard::try_from("C++23".to_string()),
+            Ok(Standard::CPP23)
+        ));
+        assert!(matches!(
+            Standard::try_from("cpp23".to_string()),
+            Ok(Standard::CPP23)
+        ));
+        assert!(matches!(
+            Standard::try_from("CPP20".to_string()),
+            Ok(Standard::CPP20)
+        ));
+        assert!(matches!(
+            Standard::try_from("CPP98".to_string()),
+            Ok(Standard::CPP98)
+        ));
+    }
+
+    #[test]
+    fn compiler_type_target_mode_normalize() {
+        assert!(matches!(
+            Compiler::try_from("MSVC".to_string()),
+            Ok(Compiler::MSVC)
+        ));
+        assert!(matches!(
+            Compiler::try_from("clang++".to_string()),
+            Ok(Compiler::CLANG)
+        ));
+        assert!(matches!(
+            Type::try_from("dll".to_string()),
+            Ok(Type::DynLibrary)
+        ));
+        assert!(matches!(
+            Type::try_from("dylib".to_string()),
+            Ok(Type::DynLibrary)
+        ));
+        assert!(matches!(
+            Target::try_from("x86_64".to_string()),
+            Ok(Target::X86_64)
+        ));
+        assert!(matches!(
+            Target::try_from("x64".to_string()),
+            Ok(Target::X86_64)
+        ));
+        assert!(matches!(
+            Mode::try_from("Release".to_string()),
+            Ok(Mode::Release)
+        ));
+    }
+
+    #[test]
+    fn string_or_vec_accepts_array_and_comma_string() {
+        #[derive(Deserialize)]
+        struct Holder {
+            #[serde(deserialize_with = "string_or_vec")]
+            items: Vec<String>,
+        }
+        let a: Holder = toml::from_str(r#"items = ["json", "doctest"]"#).unwrap();
+        assert_eq!(a.items, vec!["json".to_string(), "doctest".to_string()]);
+        let b: Holder = toml::from_str(r#"items = "json, doctest""#).unwrap();
+        assert_eq!(b.items, vec!["json".to_string(), "doctest".to_string()]);
+    }
+
+    #[test]
+    fn test_prj_config_parses_to_same_settings() {
+        let toml = include_str!("../tests/test_prj/config.toml");
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.project.name.as_deref(), Some("test_prj"));
+        assert!(matches!(cfg.settings.language, Language::C));
+        assert!(matches!(cfg.settings.standard, Standard::C99));
+        assert!(matches!(cfg.settings.compiler, Compiler::GCC));
+        assert!(matches!(cfg.settings.build_type, Type::Binary));
+        assert!(matches!(cfg.settings.mode, Mode::Debug));
+        assert_eq!(cfg.settings.target, Target::X86_64);
+        assert!(cfg.settings.libraries.is_empty());
+    }
+
+    #[test]
+    fn full_v2_config_parses() {
+        let toml = r#"
+[project]
+name = "trace_ai"
+
+[settings]
+language = "cpp"
+standard = "c++23"
+compiler = "msvc"
+type = "dylib"
+target = "x86_64"
+mode = "release"
+include_dirs = ["../shared"]
+defines = ["NOMINMAX", "WIN32_LEAN_AND_MEAN"]
+cflags = ["/MD", "/EHsc"]
+lflags = ["/DEBUG:FULL"]
+system_libs = ["psapi", "kernel32"]
+
+[dependencies]
+shared = { path = "../shared" }
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.project.name.as_deref(), Some("trace_ai"));
+        assert!(matches!(cfg.settings.language, Language::CPP));
+        assert!(matches!(cfg.settings.standard, Standard::CPP23));
+        assert!(matches!(cfg.settings.build_type, Type::DynLibrary));
+        assert_eq!(
+            cfg.settings.defines,
+            vec!["NOMINMAX", "WIN32_LEAN_AND_MEAN"]
+        );
+        assert_eq!(cfg.settings.cflags, vec!["/MD", "/EHsc"]);
+        assert_eq!(cfg.settings.system_libs, vec!["psapi", "kernel32"]);
+        assert_eq!(
+            cfg.dependencies["shared"].path.as_deref(),
+            Some("../shared")
+        );
+    }
 }
