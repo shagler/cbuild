@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer};
 
@@ -597,6 +597,225 @@ fn msvc_link_tail(settings: &Settings) -> Vec<String> {
     out
 }
 
+fn tool_not_found_msg(tool: &str) -> String {
+    if matches!(tool, "cl.exe" | "lib.exe" | "link.exe") {
+        format!("{tool} — run from a Developer Command Prompt (MSVC tools not on PATH)")
+    } else {
+        format!("{tool} not found on PATH")
+    }
+}
+
+fn run_tool(config: &Config, tool: &str, args: &[String], on_failure: Error) -> Result<()> {
+    log(
+        config,
+        &format!("Running command: {} {}", tool, args.join(" ")),
+    );
+    let output = std::process::Command::new(tool)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::ToolNotFound(tool_not_found_msg(tool))
+            } else {
+                Error::IO(e)
+            }
+        })?;
+    if !output.status.success() {
+        std::io::stdout().write_all(&output.stdout)?;
+        std::io::stderr().write_all(&output.stderr)?;
+        return Err(on_failure);
+    }
+    Ok(())
+}
+
+fn object_path(obj_root: &Path, src_root: &Path, source: &Path, compiler: &Compiler) -> PathBuf {
+    let rel = source.strip_prefix(src_root).unwrap_or(source);
+    let mut os = obj_root.join(rel).into_os_string();
+    os.push(match compiler {
+        Compiler::MSVC => ".obj",
+        _ => ".o",
+    });
+    PathBuf::from(os)
+}
+
+fn depfile_path(obj: &Path, compiler: &Compiler) -> PathBuf {
+    let mut os = obj.to_path_buf().into_os_string();
+    os.push(match compiler {
+        Compiler::MSVC => ".json",
+        _ => ".d",
+    });
+    PathBuf::from(os)
+}
+
+fn file_mtime(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+fn read_deps_make(dep: &Path) -> Option<Vec<PathBuf>> {
+    let content = std::fs::read_to_string(dep).ok()?;
+    let joined = content.replace("\\\r\n", " ").replace("\\\n", " ");
+    let idx = joined.find(": ").or_else(|| joined.find(":\t"))?;
+    let deps = joined[idx + 1..]
+        .split_whitespace()
+        .map(PathBuf::from)
+        .collect();
+    Some(deps)
+}
+
+fn read_deps_msvc(dep: &Path) -> Option<Vec<PathBuf>> {
+    let content = std::fs::read_to_string(dep).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let includes = v.get("Data")?.get("Includes")?.as_array()?;
+    Some(
+        includes
+            .iter()
+            .filter_map(|x| x.as_str().map(PathBuf::from))
+            .collect(),
+    )
+}
+
+fn needs_recompile(
+    source: &Path,
+    obj: &Path,
+    dep: &Path,
+    compiler: &Compiler,
+    force: bool,
+) -> bool {
+    if force {
+        return true;
+    }
+    let obj_mtime = match file_mtime(obj) {
+        Some(t) => t,
+        None => return true,
+    };
+    if file_mtime(source).map_or(true, |t| t > obj_mtime) {
+        return true;
+    }
+    let deps = match compiler {
+        Compiler::MSVC => read_deps_msvc(dep),
+        _ => read_deps_make(dep),
+    };
+    match deps {
+        None => true,
+        Some(headers) => headers
+            .iter()
+            .any(|h| file_mtime(h).map_or(true, |t| t > obj_mtime)),
+    }
+}
+
+fn compile_object(
+    config: &Config,
+    source: &Path,
+    obj: &Path,
+    dep: &Path,
+    include_dirs: &[PathBuf],
+    obj_dir: &Path,
+) -> Result<()> {
+    if let Some(parent) = obj.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let settings = &config.settings;
+    let mut args = Vec::new();
+    let tool = match settings.compiler {
+        Compiler::MSVC => {
+            args.push("/nologo".to_string());
+            args.push("/c".to_string());
+            args.push(format!("/Fo{}", obj.display()));
+            args.push(format!("/Fd{}\\", obj_dir.display()));
+            args.push("/sourceDependencies".to_string());
+            args.push(dep.display().to_string());
+            for inc in include_dirs {
+                args.push(format!("/I{}", inc.display()));
+            }
+            args.extend(msvc_compile_flags(settings));
+            args.push(source.display().to_string());
+            "cl.exe"
+        }
+        _ => {
+            let tool = cc_driver(settings);
+            args.push("-c".to_string());
+            args.push(format!("-o{}", obj.display()));
+            args.push("-MMD".to_string());
+            args.push("-MF".to_string());
+            args.push(dep.display().to_string());
+            for inc in include_dirs {
+                args.push(format!("-I{}", inc.display()));
+            }
+            args.extend(cc_compile_flags(settings));
+            args.push(source.display().to_string());
+            tool
+        }
+    };
+    run_tool(config, tool, &args, Error::CompileFailed())
+}
+
+fn link_objects(config: &Config, objects: &[PathBuf], output_file: &Path) -> Result<()> {
+    let settings = &config.settings;
+    let mut args = Vec::new();
+    let tool = match settings.compiler {
+        Compiler::MSVC => {
+            args.push("/nologo".to_string());
+            args.push(format!("/Fe:{}", output_file.display()));
+            for obj in objects {
+                args.push(obj.display().to_string());
+            }
+            args.extend(msvc_link_tail(settings));
+            "cl.exe"
+        }
+        _ => {
+            let tool = cc_driver(settings);
+            args.push(format!("-o{}", output_file.display()));
+            for obj in objects {
+                args.push(obj.display().to_string());
+            }
+            args.extend(cc_link_tail(settings));
+            tool
+        }
+    };
+    run_tool(config, tool, &args, Error::LinkFailed())
+}
+
+fn compile_fingerprint(s: &Settings, includes: &[PathBuf]) -> String {
+    format!(
+        "compiler={:?};lang={:?};std={:?};mode={:?};defines={:?};cflags={:?};includes={:?}",
+        s.compiler,
+        s.language,
+        s.standard,
+        s.mode,
+        s.defines,
+        s.cflags,
+        includes
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+    )
+}
+
+fn link_fingerprint(s: &Settings) -> String {
+    format!(
+        "type={:?};target={:?};mode={:?};syslibs={:?};lflags={:?}",
+        s.build_type, s.target, s.mode, s.system_libs, s.lflags
+    )
+}
+
+fn read_fingerprint(path: &Path) -> (Option<String>, Option<String>) {
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let mut lines = content.lines();
+            (
+                lines.next().map(str::to_string),
+                lines.next().map(str::to_string),
+            )
+        }
+        Err(_) => (None, None),
+    }
+}
+
+fn write_fingerprint(path: &Path, compile_fp: &str, link_fp: &str) -> Result<()> {
+    std::fs::write(path, format!("{}\n{}\n", compile_fp, link_fp))?;
+    Ok(())
+}
+
 fn build_project(config: Config) -> Result<()> {
     log(&config, "Starting build process");
     manage_dependencies(&config)?;
@@ -631,60 +850,39 @@ fn build_project(config: Config) -> Result<()> {
     );
     let include_dirs: Vec<PathBuf> = include_dirs.into_iter().filter(|p| p.exists()).collect();
 
-    let mut args = Vec::new();
-    let compiler = match config.settings.compiler {
-        Compiler::GCC | Compiler::CLANG => {
-            let compiler = cc_driver(&config.settings);
+    let obj_dir = current_dir.join(".cbuild").join("obj");
+    std::fs::create_dir_all(&obj_dir)?;
 
-            args.push(format!("-o{}", output_file.to_str().unwrap()));
-            for inc in &include_dirs {
-                args.push(format!("-I{}", inc.to_str().unwrap()));
-            }
-            args.extend(cc_compile_flags(&config.settings));
-            args.extend(
-                source_files
-                    .iter()
-                    .map(|path| path.to_str().unwrap().to_string()),
-            );
-            args.extend(cc_link_tail(&config.settings));
+    let compile_fp = compile_fingerprint(&config.settings, &include_dirs);
+    let link_fp = link_fingerprint(&config.settings);
+    let fp_file = current_dir.join(".cbuild").join("build.fingerprint");
+    let (old_compile_fp, old_link_fp) = read_fingerprint(&fp_file);
+    let force_all = old_compile_fp.as_deref() != Some(compile_fp.as_str());
+    let link_fp_changed = old_link_fp.as_deref() != Some(link_fp.as_str());
 
-            compiler
+    let mut objects = Vec::with_capacity(source_files.len());
+    let mut recompiled_any = false;
+    for source in &source_files {
+        let obj = object_path(&obj_dir, &src_path, source, &config.settings.compiler);
+        let dep = depfile_path(&obj, &config.settings.compiler);
+        if needs_recompile(source, &obj, &dep, &config.settings.compiler, force_all) {
+            log(&config, &format!("Compiling {}", source.display()));
+            compile_object(&config, source, &obj, &dep, &include_dirs, &obj_dir)?;
+            recompiled_any = true;
         }
-        Compiler::MSVC => {
-            let compiler = "cl.exe";
-            args.push(format!("/Fe:{}", output_file.to_str().unwrap()));
-            for inc in &include_dirs {
-                args.push(format!("/I{}", inc.to_str().unwrap()));
-            }
-            args.extend(msvc_compile_flags(&config.settings));
-            args.extend(
-                source_files
-                    .iter()
-                    .map(|path| path.to_str().unwrap().to_string()),
-            );
-            args.extend(msvc_link_tail(&config.settings));
-
-            compiler
-        }
-    };
-
-    log(
-        &config,
-        &format!("Running command: {} {}", compiler, args.join(" ")),
-    );
-
-    let output = std::process::Command::new(compiler)
-        .args(&args)
-        .output()
-        .expect("Failed to execute build command");
-
-    if !output.status.success() {
-        std::io::stderr().write_all(&output.stderr)?;
-        return Err(Error::BuildFailed());
+        objects.push(obj);
     }
 
     // @TODO: don't print on `run` mode
-    println!("Built `{}`", project_name);
+    if recompiled_any || link_fp_changed || !output_file.exists() {
+        log(&config, "Linking");
+        link_objects(&config, &objects, &output_file)?;
+        println!("Built `{}`", project_name);
+    } else {
+        println!("`{}` is up to date", project_name);
+    }
+
+    write_fingerprint(&fp_file, &compile_fp, &link_fp)?;
     Ok(())
 }
 
@@ -752,20 +950,7 @@ fn build_and_run_file(config: &Config, file_name: &str) -> Result<()> {
 
     args.push(source_file.to_str().unwrap().to_string());
 
-    log(
-        config,
-        &format!("Running command: {} {}", compiler, args.join(" ")),
-    );
-
-    let output = std::process::Command::new(compiler)
-        .args(&args)
-        .output()
-        .expect("Failed to execute build command");
-
-    if !output.status.success() {
-        std::io::stderr().write_all(&output.stderr)?;
-        return Err(Error::BuildFailed());
-    }
+    run_tool(config, compiler, &args, Error::BuildFailed())?;
 
     println!("Built file: {}", file_name);
 
@@ -788,9 +973,14 @@ fn build_and_run_file(config: &Config, file_name: &str) -> Result<()> {
 }
 
 fn clean_project() -> Result<()> {
-    let bin_path = "bin";
-    if std::path::Path::new(bin_path).exists() {
-        std::fs::remove_dir_all(bin_path)?;
+    let mut cleaned = false;
+    for dir in ["bin", ".cbuild"] {
+        if Path::new(dir).exists() {
+            std::fs::remove_dir_all(dir)?;
+            cleaned = true;
+        }
+    }
+    if cleaned {
         println!("Cleaned build artifacts");
     }
     Ok(())
@@ -1065,6 +1255,49 @@ shared = { path = "../shared" }
         let tail = cc_link_tail(&s);
         assert!(tail.contains(&"-s".to_string()));
         assert!(tail.contains(&"-lpsapi".to_string()));
+    }
+
+    #[test]
+    fn object_path_mirrors_tree_and_avoids_collision() {
+        let obj_root = Path::new("/proj/.cbuild/obj");
+        let src_root = Path::new("/proj/src");
+        let cpp = object_path(
+            obj_root,
+            src_root,
+            Path::new("/proj/src/a/foo.cpp"),
+            &Compiler::CLANG,
+        );
+        let c = object_path(
+            obj_root,
+            src_root,
+            Path::new("/proj/src/a/foo.c"),
+            &Compiler::CLANG,
+        );
+        assert_eq!(cpp.file_name().unwrap(), "foo.cpp.o");
+        assert_eq!(c.file_name().unwrap(), "foo.c.o");
+        assert_ne!(cpp, c);
+        let obj = object_path(
+            obj_root,
+            src_root,
+            Path::new("/proj/src/a/foo.cpp"),
+            &Compiler::MSVC,
+        );
+        assert_eq!(obj.file_name().unwrap(), "foo.cpp.obj");
+    }
+
+    #[test]
+    fn make_depfile_parses_and_ignores_drive_colons() {
+        let path = std::env::temp_dir().join(format!("cbuild_dep_{}.d", std::process::id()));
+        std::fs::write(
+            &path,
+            "C:\\obj\\main.cpp.o: C:\\src\\main.cpp \\\n  C:\\src\\greet\\greet.hpp\n",
+        )
+        .unwrap();
+        let deps = read_deps_make(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&PathBuf::from("C:\\src\\main.cpp")));
+        assert!(deps.contains(&PathBuf::from("C:\\src\\greet\\greet.hpp")));
     }
 
     #[test]

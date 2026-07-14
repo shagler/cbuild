@@ -28,6 +28,15 @@ pub enum Error {
     #[error("Build failed")]
     BuildFailed(),
 
+    #[error("Compilation failed")]
+    CompileFailed(),
+
+    #[error("Link failed")]
+    LinkFailed(),
+
+    #[error("Build tool not found: {0}")]
+    ToolNotFound(String),
+
     #[error("Run failed with exit code: {0:?}")]
     RunFailed(Option<i32>),
 }
