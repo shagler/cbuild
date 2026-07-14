@@ -486,6 +486,117 @@ fn collect_sources(root: &std::path::Path) -> Result<Vec<PathBuf>> {
     Ok(sources)
 }
 
+fn cc_driver(settings: &Settings) -> &'static str {
+    match (&settings.compiler, &settings.language) {
+        (Compiler::GCC, Language::CPP) => "g++",
+        (Compiler::GCC, _) => "gcc",
+        (Compiler::CLANG, Language::CPP) => "clang++",
+        (Compiler::CLANG, _) => "clang",
+        (Compiler::MSVC, _) => "cl.exe", // unused for the MSVC path
+    }
+}
+
+fn cc_std_flag(standard: &Standard) -> &'static str {
+    match standard {
+        Standard::C89 => "-std=c89",
+        Standard::C99 => "-std=c99",
+        Standard::C11 => "-std=c11",
+        Standard::C17 => "-std=c17",
+        Standard::CPP98 => "-std=c++98",
+        Standard::CPP11 => "-std=c++11",
+        Standard::CPP14 => "-std=c++14",
+        Standard::CPP17 => "-std=c++17",
+        Standard::CPP20 => "-std=c++20",
+        Standard::CPP23 => "-std=c++23",
+    }
+}
+
+fn msvc_std_flag(standard: &Standard) -> Option<&'static str> {
+    match standard {
+        Standard::C89 => None,
+        Standard::C99 | Standard::C11 => Some("/std:c11"),
+        Standard::C17 => Some("/std:c17"),
+        Standard::CPP98 | Standard::CPP11 | Standard::CPP14 => Some("/std:c++14"),
+        Standard::CPP17 => Some("/std:c++17"),
+        Standard::CPP20 => Some("/std:c++20"),
+        Standard::CPP23 => Some("/std:c++latest"),
+    }
+}
+
+fn cc_compile_flags(settings: &Settings) -> Vec<String> {
+    let mut flags = vec![cc_std_flag(&settings.standard).to_string()];
+    match settings.mode {
+        Mode::Debug => flags.push("-g".to_string()),
+        Mode::Release => {
+            flags.push("-O3".to_string());
+            flags.push("-DNDEBUG".to_string());
+        }
+    }
+    if settings.target == Target::X86_64 {
+        flags.push("-m64".to_string());
+    }
+    for d in &settings.defines {
+        flags.push(format!("-D{d}"));
+    }
+    flags.extend(settings.cflags.iter().cloned());
+    flags
+}
+
+fn cc_link_tail(settings: &Settings) -> Vec<String> {
+    let mut tail = Vec::new();
+    if let Mode::Release = settings.mode {
+        tail.push("-s".to_string());
+    }
+    tail.extend(settings.lflags.iter().cloned());
+    for lib in &settings.system_libs {
+        tail.push(format!("-l{lib}"));
+    }
+    tail
+}
+
+fn msvc_compile_flags(settings: &Settings) -> Vec<String> {
+    let mut flags = Vec::new();
+    if let Some(std) = msvc_std_flag(&settings.standard) {
+        flags.push(std.to_string());
+    }
+    if let Language::CPP = settings.language {
+        flags.push("/EHsc".to_string());
+    }
+    match settings.mode {
+        Mode::Debug => flags.push("/Zi".to_string()),
+        Mode::Release => {
+            flags.push("/O2".to_string());
+            flags.push("/DNDEBUG".to_string());
+        }
+    }
+    for d in &settings.defines {
+        flags.push(format!("/D{d}"));
+    }
+    flags.extend(settings.cflags.iter().cloned());
+    flags
+}
+
+fn msvc_link_tail(settings: &Settings) -> Vec<String> {
+    let mut tail = Vec::new();
+    if settings.target == Target::X86_64 {
+        tail.push("/MACHINE:X64".to_string());
+    }
+    tail.extend(settings.lflags.iter().cloned());
+    for lib in &settings.system_libs {
+        if lib.to_ascii_lowercase().ends_with(".lib") {
+            tail.push(lib.clone());
+        } else {
+            tail.push(format!("{lib}.lib"));
+        }
+    }
+    if tail.is_empty() {
+        return tail;
+    }
+    let mut out = vec!["/link".to_string()];
+    out.extend(tail);
+    out
+}
+
 fn build_project(config: Config) -> Result<()> {
     log(&config, "Starting build process");
     manage_dependencies(&config)?;
@@ -523,47 +634,19 @@ fn build_project(config: Config) -> Result<()> {
     let mut args = Vec::new();
     let compiler = match config.settings.compiler {
         Compiler::GCC | Compiler::CLANG => {
-            let compiler = match config.settings.compiler {
-                Compiler::GCC => "gcc",
-                Compiler::CLANG => "clang",
-                _ => unreachable!(),
-            };
+            let compiler = cc_driver(&config.settings);
 
             args.push(format!("-o{}", output_file.to_str().unwrap()));
             for inc in &include_dirs {
                 args.push(format!("-I{}", inc.to_str().unwrap()));
             }
-
-            args.push(match config.settings.standard {
-                Standard::C89 => "-std=c89".to_string(),
-                Standard::C99 => "-std=c99".to_string(),
-                Standard::C11 => "-std=c11".to_string(),
-                Standard::C17 => "-std=c17".to_string(),
-                Standard::CPP98 => "-std=c++98".to_string(),
-                Standard::CPP11 => "-std=c++11".to_string(),
-                Standard::CPP14 => "-std=c++14".to_string(),
-                Standard::CPP17 => "-std=c++17".to_string(),
-                Standard::CPP20 => "-std=c++20".to_string(),
-                Standard::CPP23 => "-std=c++23".to_string(),
-            });
-
-            match config.settings.mode {
-                Mode::Debug => args.push("-g".to_string()),
-                Mode::Release => {
-                    args.push("-O3".to_string());
-                    args.push("-s".to_string());
-                }
-            }
-
-            if config.settings.target == Target::X86_64 {
-                args.push("-m64".to_string());
-            }
-
+            args.extend(cc_compile_flags(&config.settings));
             args.extend(
                 source_files
                     .iter()
                     .map(|path| path.to_str().unwrap().to_string()),
             );
+            args.extend(cc_link_tail(&config.settings));
 
             compiler
         }
@@ -573,33 +656,13 @@ fn build_project(config: Config) -> Result<()> {
             for inc in &include_dirs {
                 args.push(format!("/I{}", inc.to_str().unwrap()));
             }
-
-            args.push(match config.settings.standard {
-                Standard::C89 => "/Za".to_string(),
-                Standard::C99 | Standard::C11 | Standard::C17 => "/std:c11".to_string(),
-                Standard::CPP98 | Standard::CPP11 | Standard::CPP14 => "/std:c++14".to_string(),
-                Standard::CPP17 => "/std:c++17".to_string(),
-                Standard::CPP20 => "/std:c++latest".to_string(),
-                Standard::CPP23 => "/std:c++latest".to_string(),
-            });
-
-            match config.settings.mode {
-                Mode::Debug => args.push("/Zi".to_string()),
-                Mode::Release => {
-                    args.push("/O2".to_string());
-                    args.push("/DNDEBUG".to_string());
-                }
-            }
-
-            if config.settings.target == Target::X86_64 {
-                args.push("/MACHINE:X64".to_string());
-            }
-
+            args.extend(msvc_compile_flags(&config.settings));
             args.extend(
                 source_files
                     .iter()
                     .map(|path| path.to_str().unwrap().to_string()),
             );
+            args.extend(msvc_link_tail(&config.settings));
 
             compiler
         }
@@ -939,6 +1002,86 @@ shared = { path = "../shared" }
         assert_eq!(
             cfg.dependencies["shared"].path.as_deref(),
             Some("../shared")
+        );
+    }
+
+    fn settings(mutate: impl FnOnce(&mut Settings)) -> Settings {
+        let mut s = Settings::default();
+        mutate(&mut s);
+        s
+    }
+
+    #[test]
+    fn msvc_standard_flags_are_corrected() {
+        assert_eq!(msvc_std_flag(&Standard::C89), None);
+        assert_eq!(msvc_std_flag(&Standard::C99), Some("/std:c11"));
+        assert_eq!(msvc_std_flag(&Standard::C17), Some("/std:c17"));
+        assert_eq!(msvc_std_flag(&Standard::CPP17), Some("/std:c++17"));
+        assert_eq!(msvc_std_flag(&Standard::CPP20), Some("/std:c++20"));
+        assert_eq!(msvc_std_flag(&Standard::CPP23), Some("/std:c++latest"));
+    }
+
+    #[test]
+    fn msvc_cpp_gets_ehsc_and_defines() {
+        let s = settings(|s| {
+            s.language = Language::CPP;
+            s.standard = Standard::CPP23;
+            s.defines = vec!["NOMINMAX".into()];
+            s.cflags = vec!["/MD".into()];
+        });
+        let flags = msvc_compile_flags(&s);
+        assert!(flags.contains(&"/std:c++latest".to_string()));
+        assert!(flags.contains(&"/EHsc".to_string()));
+        assert!(flags.contains(&"/DNOMINMAX".to_string()));
+        assert!(flags.contains(&"/MD".to_string()));
+    }
+
+    #[test]
+    fn msvc_link_tail_places_machine_and_syslibs_after_link() {
+        let s = settings(|s| {
+            s.system_libs = vec!["psapi".into(), "kernel32.lib".into()];
+            s.lflags = vec!["/DEBUG:FULL".into()];
+        });
+        let tail = msvc_link_tail(&s);
+        assert_eq!(tail[0], "/link");
+        assert!(tail.contains(&"/MACHINE:X64".to_string()));
+        assert!(tail.contains(&"/DEBUG:FULL".to_string()));
+        assert!(tail.contains(&"psapi.lib".to_string()));
+        assert!(tail.contains(&"kernel32.lib".to_string()));
+        assert!(!tail.iter().any(|f| f == "kernel32.lib.lib"));
+    }
+
+    #[test]
+    fn cc_release_defines_ndebug_and_strips_at_link() {
+        let s = settings(|s| {
+            s.compiler = Compiler::CLANG;
+            s.mode = Mode::Release;
+            s.system_libs = vec!["psapi".into()];
+        });
+        let compile = cc_compile_flags(&s);
+        assert!(compile.contains(&"-O3".to_string()));
+        assert!(compile.contains(&"-DNDEBUG".to_string()));
+        assert!(!compile.contains(&"-s".to_string()));
+        let tail = cc_link_tail(&s);
+        assert!(tail.contains(&"-s".to_string()));
+        assert!(tail.contains(&"-lpsapi".to_string()));
+    }
+
+    #[test]
+    fn cc_driver_selects_cpp_frontend() {
+        assert_eq!(
+            cc_driver(&settings(|s| {
+                s.compiler = Compiler::CLANG;
+                s.language = Language::CPP;
+            })),
+            "clang++"
+        );
+        assert_eq!(
+            cc_driver(&settings(|s| {
+                s.compiler = Compiler::GCC;
+                s.language = Language::C;
+            })),
+            "gcc"
         );
     }
 }
