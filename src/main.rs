@@ -455,6 +455,37 @@ fn manage_dependencies(config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn collect_sources(root: &std::path::Path) -> Result<Vec<PathBuf>> {
+    const SOURCE_EXTS: [&str; 5] = ["c", "cpp", "cc", "cxx", "c++"];
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = std::collections::HashSet::new();
+    let mut sources = Vec::new();
+
+    while let Some(dir) = stack.pop() {
+        if let Ok(canonical) = dir.canonicalize() {
+            if !visited.insert(canonical) {
+                continue;
+            }
+        }
+        for entry in std::fs::read_dir(&dir)?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| SOURCE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+                .unwrap_or(false)
+            {
+                sources.push(path);
+            }
+        }
+    }
+
+    sources.sort();
+    Ok(sources)
+}
+
 fn build_project(config: Config) -> Result<()> {
     log(&config, "Starting build process");
     manage_dependencies(&config)?;
@@ -472,24 +503,22 @@ fn build_project(config: Config) -> Result<()> {
         .ok_or_else(|| Error::Config("Project name not found".to_string()))?;
     let output_file = bin_path.join(project_name);
 
-    let mut source_files = Vec::new();
-    for entry in std::fs::read_dir(&src_path)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file()
-            && path
-                .extension()
-                .map_or(false, |ext| ext == "c" || ext == "cpp")
-        {
-            source_files.push(path);
-        }
-    }
-
+    let source_files = collect_sources(&src_path)?;
     if source_files.is_empty() {
         return Err(Error::Config(
             "No source files found in src directory".to_string(),
         ));
     }
+
+    let mut include_dirs: Vec<PathBuf> = vec![src_path.clone(), lib_path.clone()];
+    include_dirs.extend(
+        config
+            .settings
+            .include_dirs
+            .iter()
+            .map(|d| current_dir.join(d)),
+    );
+    let include_dirs: Vec<PathBuf> = include_dirs.into_iter().filter(|p| p.exists()).collect();
 
     let mut args = Vec::new();
     let compiler = match config.settings.compiler {
@@ -501,7 +530,9 @@ fn build_project(config: Config) -> Result<()> {
             };
 
             args.push(format!("-o{}", output_file.to_str().unwrap()));
-            args.push(format!("-I{}", lib_path.to_str().unwrap()));
+            for inc in &include_dirs {
+                args.push(format!("-I{}", inc.to_str().unwrap()));
+            }
 
             args.push(match config.settings.standard {
                 Standard::C89 => "-std=c89".to_string(),
@@ -539,7 +570,9 @@ fn build_project(config: Config) -> Result<()> {
         Compiler::MSVC => {
             let compiler = "cl.exe";
             args.push(format!("/Fe:{}", output_file.to_str().unwrap()));
-            args.push(format!("/I{}", lib_path.to_str().unwrap()));
+            for inc in &include_dirs {
+                args.push(format!("/I{}", inc.to_str().unwrap()));
+            }
 
             args.push(match config.settings.standard {
                 Standard::C89 => "/Za".to_string(),
